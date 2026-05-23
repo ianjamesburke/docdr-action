@@ -88,19 +88,33 @@ def get_doc_files(repo_path: str = ".") -> list[DocFile]:
 
 
 def checkout_or_update_branch(branch_name: str, repo_path: str = ".") -> None:
-    """Create a new branch or switch to existing one."""
-    result = subprocess.run(
+    """Create a new branch or switch to existing one (fetching from remote if needed)."""
+    local = subprocess.run(
         ["git", "-C", repo_path, "branch", "--list", branch_name],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
-    if branch_name in result.stdout:
+    if branch_name in local.stdout:
         subprocess.run(["git", "-C", repo_path, "checkout", branch_name], check=True, capture_output=True)
+        return
+
+    # Check if branch exists on remote
+    remote = subprocess.run(
+        ["git", "-C", repo_path, "ls-remote", "--heads", "origin", branch_name],
+        capture_output=True, text=True,
+    )
+    if branch_name in remote.stdout:
+        subprocess.run(
+            ["git", "-C", repo_path, "fetch", "origin", branch_name],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo_path, "checkout", "-b", branch_name, f"origin/{branch_name}"],
+            check=True, capture_output=True,
+        )
     else:
         subprocess.run(
             ["git", "-C", repo_path, "checkout", "-b", branch_name],
-            check=True,
-            capture_output=True,
+            check=True, capture_output=True,
         )
 
 
