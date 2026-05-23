@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,34 @@ def _validate_update_path(path: str) -> None:
     is_under_docs = path.startswith("docs/")
     if not (is_md or is_under_docs):
         raise ValueError(f"Path not allowed (must be *.md or under docs/): {path!r}")
+
+
+def find_existing_doc_pr(repo_path: str = ".") -> str | None:
+    """Return the branch name of an existing open Draft PR with ai-docs- prefix, or None."""
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "list",
+                "--state", "open",
+                "--draft",
+                "--json", "headRefName,number",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=repo_path,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+
+        prs = json.loads(result.stdout)
+        for pr in prs:
+            if pr.get("headRefName", "").startswith("ai-docs-"):
+                return pr["headRefName"]
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        # gh not available, timeout, or bad output: fall back to new branch
+        return None
+    return None
 
 
 def get_doc_files(repo_path: str = ".") -> list[DocFile]:

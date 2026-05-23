@@ -1,7 +1,8 @@
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 import pytest
-from docdr.git import get_doc_files, write_updates, checkout_or_update_branch, _validate_update_path
+from docdr.git import get_doc_files, write_updates, checkout_or_update_branch, find_existing_doc_pr, _validate_update_path
 from docdr.client import FileUpdate
 
 
@@ -126,3 +127,37 @@ def test_write_updates_rejects_hidden(git_repo):
     updates = [FileUpdate(path=".github/workflows/evil.md", content="bad")]
     with pytest.raises(ValueError):
         write_updates(updates, str(git_repo))
+
+
+# --- find_existing_doc_pr tests ---
+
+
+def _make_completed_process(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+def test_find_existing_doc_pr_returns_branch_when_found():
+    json_output = '[{"headRefName": "ai-docs-abc12345", "number": 42}]'
+    with patch("docdr.git.subprocess.run", return_value=_make_completed_process(json_output)):
+        assert find_existing_doc_pr("/fake") == "ai-docs-abc12345"
+
+
+def test_find_existing_doc_pr_returns_none_when_no_match():
+    json_output = '[{"headRefName": "feature-branch", "number": 10}]'
+    with patch("docdr.git.subprocess.run", return_value=_make_completed_process(json_output)):
+        assert find_existing_doc_pr("/fake") is None
+
+
+def test_find_existing_doc_pr_returns_none_on_empty_list():
+    with patch("docdr.git.subprocess.run", return_value=_make_completed_process("[]")):
+        assert find_existing_doc_pr("/fake") is None
+
+
+def test_find_existing_doc_pr_returns_none_when_gh_missing():
+    with patch("docdr.git.subprocess.run", side_effect=FileNotFoundError):
+        assert find_existing_doc_pr("/fake") is None
+
+
+def test_find_existing_doc_pr_returns_none_on_nonzero_exit():
+    with patch("docdr.git.subprocess.run", return_value=_make_completed_process("", returncode=1)):
+        assert find_existing_doc_pr("/fake") is None
