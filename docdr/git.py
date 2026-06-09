@@ -4,8 +4,19 @@ from pathlib import Path
 
 from docdr.client import DocFile, FileUpdate
 
-_ALLOWED_PREFIXES = ("docs/",)
-_HIDDEN_PARTS = {".git", ".github"}
+_METADATA_FILES = {
+    "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
+    "LICENSE.md", "AUTHORS.md", "SECURITY.md",
+}
+
+_ENTRY_POINT_HEURISTICS = [
+    "main.py", "app.py", "index.ts", "index.js", "lib.rs",
+    "src/main.py", "src/app.py", "src/main.ts", "src/index.ts",
+    "src/index.js", "src/lib.rs", "src/main.rs",
+]
+
+_ENTRY_POINT_BUDGET = 50_000  # bytes
+
 
 
 def _validate_update_path(path: str) -> None:
@@ -43,7 +54,7 @@ def _validate_update_path(path: str) -> None:
 
 
 def find_existing_doc_pr(repo_path: str = ".") -> str | None:
-    """Return the branch name of an existing open Draft PR with ai-docs- prefix, or None."""
+    """Return the branch name of an existing open Draft PR with docdr- prefix, or None."""
     try:
         result = subprocess.run(
             [
@@ -62,12 +73,115 @@ def find_existing_doc_pr(repo_path: str = ".") -> str | None:
 
         prs = json.loads(result.stdout)
         for pr in prs:
-            if pr.get("headRefName", "").startswith("ai-docs-"):
+            if pr.get("headRefName", "").startswith("docdr-"):
                 return pr["headRefName"]
     except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
         # gh not available, timeout, or bad output: fall back to new branch
         return None
     return None
+
+
+def get_real_doc_files(repo_path: str = ".") -> list[DocFile]:
+    """Return only 'real' documentation files: README.md and files under docs/.
+    Excludes metadata-only files like CHANGELOG.md, CONTRIBUTING.md, etc.
+    Used by detect_mode to decide bootstrap vs maintenance."""
+    result = subprocess.run(
+        ["git", "-C", repo_path, "ls-files"],
+        capture_output=True,
+        text=True,
+    )
+    files = []
+    for rel_path in result.stdout.splitlines():
+        # Only README.md at root or anything under docs/
+        is_readme = rel_path == "README.md"
+        is_under_docs = rel_path.startswith("docs/")
+        # Exclude known metadata-only files
+        filename = Path(rel_path).name
+        if (is_readme or is_under_docs) and filename not in _METADATA_FILES:
+            full = Path(repo_path) / rel_path
+            if full.exists() and full.is_file():
+                try:
+                    files.append(DocFile(path=rel_path, content=full.read_text(encoding="utf-8", errors="replace")))
+                except Exception:
+                    continue
+    return files
+
+
+def get_entry_points(repo_path: str, manifests: list[DocFile]) -> list[DocFile]:
+    """Detect and read entry point files up to a 50KB total budget.
+
+    1. Parse manifests for declared entry points.
+    2. Fall back to heuristic paths.
+    Returns a list of DocFile with content read from disk."""
+    candidates: list[str] = []
+
+    for m in manifests:
+        if m.path == "package.json":
+            try:
+                data = json.loads(m.content)
+                main = data.get("main")
+                if main and isinstance(main, str):
+                    candidates.append(main)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        elif m.path in ("pyproject.toml", "setup.cfg"):
+            # Scan for [project.scripts] or [tool.poetry.scripts]
+            in_scripts = False
+            for line in m.content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("[") and "scripts" in stripped:
+                    in_scripts = True
+                    continue
+                if stripped.startswith("[") and in_scripts:
+                    break
+                if in_scripts and "=" in stripped:
+                    # value like: myapp = "myapp.main:main" → myapp/main.py
+                    val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                    if ":" in val:
+                        module_path = val.split(":")[0].replace(".", "/") + ".py"
+                        candidates.append(module_path)
+        elif m.path == "Cargo.toml":
+            in_bin = False
+            for line in m.content.splitlines():
+                stripped = line.strip()
+                if stripped == "[[bin]]":
+                    in_bin = True
+                    continue
+                if in_bin and stripped.startswith("path"):
+                    val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                    candidates.append(val)
+                    in_bin = False
+
+    # Add heuristics (only those not already found)
+    for h in _ENTRY_POINT_HEURISTICS:
+        if h not in candidates:
+            candidates.append(h)
+
+    results: list[DocFile] = []
+    budget = _ENTRY_POINT_BUDGET
+    seen: set[str] = set()
+    for rel_path in candidates:
+        if rel_path in seen:
+            continue
+        if ".." in Path(rel_path).parts:
+            continue
+        seen.add(rel_path)
+        full = (Path(repo_path) / rel_path).resolve()
+        if not full.resolve().is_relative_to(Path(repo_path).resolve()):
+            continue
+        if not full.exists() or not full.is_file():
+            continue
+        try:
+            content = full.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if len(content) > budget:
+            content = content[:budget]
+        budget -= len(content)
+        results.append(DocFile(path=rel_path, content=content))
+        if budget <= 0:
+            break
+    return results
 
 
 def get_doc_files(repo_path: str = ".") -> list[DocFile]:

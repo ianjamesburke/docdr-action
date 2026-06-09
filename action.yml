@@ -23,7 +23,7 @@ runs:
 
     - name: Install DocDr action
       shell: bash
-      run: uv pip install --system "${{ github.action_path }}"
+      run: uv pip install --system "${{ github.action_path }}/action"
 
     - name: Run DocDr
       shell: bash
@@ -31,4 +31,4 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         DOCDR_LICENSE_KEY: ${{ inputs.license-key }}
         DOCDR_API_URL: ${{ inputs.api-url }}
-      run: python "${{ github.action_path }}/action.py"
+      run: python ${{ github.action_path }}/action/action.py

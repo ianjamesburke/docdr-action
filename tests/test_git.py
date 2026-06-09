@@ -1,9 +1,8 @@
 import subprocess
-from pathlib import Path
 from unittest.mock import patch
 import pytest
-from docdr.git import get_doc_files, write_updates, checkout_or_update_branch, find_existing_doc_pr, _validate_update_path
-from docdr.client import FileUpdate
+from docdr.git import get_doc_files, get_real_doc_files, get_entry_points, write_updates, checkout_or_update_branch, find_existing_doc_pr, _validate_update_path
+from docdr.client import DocFile, FileUpdate
 
 
 @pytest.fixture
@@ -108,6 +107,133 @@ def test_validate_path_rejects_empty():
         _validate_update_path("")
 
 
+# --- get_real_doc_files ---
+
+@pytest.fixture
+def repo_with_mixed_md(tmp_path):
+    """Repo with README, docs/, and metadata files."""
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@test.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+    files = {
+        "README.md": "# Hello",
+        "CHANGELOG.md": "## v1.0",
+        "CODE_OF_CONDUCT.md": "Be nice.",
+        "CONTRIBUTING.md": "How to contribute.",
+        "LICENSE.md": "MIT",
+        "docs/guide.md": "# Guide",
+    }
+    for rel, content in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        subprocess.run(["git", "-C", str(tmp_path), "add", rel], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+    return tmp_path
+
+
+def test_get_real_doc_files_includes_readme(repo_with_mixed_md):
+    docs = get_real_doc_files(str(repo_with_mixed_md))
+    paths = [d.path for d in docs]
+    assert "README.md" in paths
+
+
+def test_get_real_doc_files_includes_docs_dir(repo_with_mixed_md):
+    docs = get_real_doc_files(str(repo_with_mixed_md))
+    paths = [d.path for d in docs]
+    assert "docs/guide.md" in paths
+
+
+def test_get_real_doc_files_excludes_metadata(repo_with_mixed_md):
+    docs = get_real_doc_files(str(repo_with_mixed_md))
+    paths = [d.path for d in docs]
+    assert "CHANGELOG.md" not in paths
+    assert "CODE_OF_CONDUCT.md" not in paths
+    assert "CONTRIBUTING.md" not in paths
+    assert "LICENSE.md" not in paths
+
+
+def test_get_doc_files_still_returns_all_md(repo_with_mixed_md):
+    """get_doc_files (maintenance flow) must remain unaffected."""
+    docs = get_doc_files(str(repo_with_mixed_md))
+    paths = [d.path for d in docs]
+    assert "CHANGELOG.md" in paths
+    assert "README.md" in paths
+    assert "docs/guide.md" in paths
+
+
+# --- get_entry_points ---
+
+@pytest.fixture
+def repo_with_pyproject(tmp_path):
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True)
+    (tmp_path / "pyproject.toml").write_text(
+        "[project.scripts]\nmyapp = \"myapp.main:main\"\n"
+    )
+    (tmp_path / "myapp").mkdir()
+    (tmp_path / "myapp" / "main.py").write_text("def main(): pass")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+    return tmp_path
+
+
+@pytest.fixture
+def repo_with_package_json(tmp_path):
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True)
+    (tmp_path / "package.json").write_text('{"name": "myapp", "main": "index.js"}')
+    (tmp_path / "index.js").write_text("console.log('hello')")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+    return tmp_path
+
+
+@pytest.fixture
+def repo_with_main_py_heuristic(tmp_path):
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True)
+    (tmp_path / "main.py").write_text("if __name__ == '__main__': pass")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+    return tmp_path
+
+
+def test_get_entry_points_from_package_json(repo_with_package_json):
+    manifests = [DocFile(path="package.json", content='{"name": "myapp", "main": "index.js"}')]
+    entries = get_entry_points(str(repo_with_package_json), manifests)
+    paths = [e.path for e in entries]
+    assert "index.js" in paths
+
+
+def test_get_entry_points_heuristic_main_py(repo_with_main_py_heuristic):
+    entries = get_entry_points(str(repo_with_main_py_heuristic), [])
+    paths = [e.path for e in entries]
+    assert "main.py" in paths
+
+
+def test_get_entry_points_returns_doc_files(repo_with_main_py_heuristic):
+    entries = get_entry_points(str(repo_with_main_py_heuristic), [])
+    assert all(hasattr(e, "path") and hasattr(e, "content") for e in entries)
+
+
+def test_get_entry_points_budget_50kb(tmp_path):
+    """Files totalling over 50KB should be truncated/excluded."""
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True)
+    big = "x" * 60_000
+    (tmp_path / "main.py").write_text(big)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+    entries = get_entry_points(str(tmp_path), [])
+    total = sum(len(e.content) for e in entries)
+    assert total <= 50_000
+
+
 def test_write_updates_rejects_traversal(git_repo):
     checkout_or_update_branch("ai-docs-test", str(git_repo))
     updates = [FileUpdate(path="../evil.md", content="bad")]
@@ -137,9 +263,9 @@ def _make_completed_process(stdout: str, returncode: int = 0) -> subprocess.Comp
 
 
 def test_find_existing_doc_pr_returns_branch_when_found():
-    json_output = '[{"headRefName": "ai-docs-abc12345", "number": 42}]'
+    json_output = '[{"headRefName": "docdr-update-abc12345", "number": 42}]'
     with patch("docdr.git.subprocess.run", return_value=_make_completed_process(json_output)):
-        assert find_existing_doc_pr("/fake") == "ai-docs-abc12345"
+        assert find_existing_doc_pr("/fake") == "docdr-update-abc12345"
 
 
 def test_find_existing_doc_pr_returns_none_when_no_match():

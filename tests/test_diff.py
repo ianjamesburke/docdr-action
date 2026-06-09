@@ -1,4 +1,4 @@
-from docdr.diff import parse_diff, filter_diff, FileDiff
+from docdr.diff import parse_diff, filter_diff
 
 SAMPLE_DIFF = """\
 diff --git a/src/main.py b/src/main.py
