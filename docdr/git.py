@@ -1,6 +1,8 @@
 import json
 import subprocess
-from pathlib import Path
+import fnmatch
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from docdr.client import DocFile, FileUpdate
 
@@ -16,6 +18,63 @@ _ENTRY_POINT_HEURISTICS = [
 ]
 
 _ENTRY_POINT_BUDGET = 50_000  # bytes
+_DOC_FILE_EXTENSIONS = (".md", ".mdx", ".rst", ".txt")
+
+
+@dataclass(frozen=True)
+class DocDrIgnorePattern:
+    pattern: str
+    negated: bool = False
+    anchored: bool = False
+
+
+def parse_docdrignore(content: str) -> list[DocDrIgnorePattern]:
+    patterns: list[DocDrIgnorePattern] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:].strip()
+        if not line:
+            continue
+        anchored = line.startswith("/")
+        line = line.lstrip("/")
+        if line.endswith("/"):
+            line = line.rstrip("/") + "/**"
+        patterns.append(DocDrIgnorePattern(pattern=line, negated=negated, anchored=anchored))
+    return patterns
+
+
+def load_docdrignore(repo_path: str = ".") -> list[DocDrIgnorePattern]:
+    ignore_path = Path(repo_path) / ".docdrignore"
+    if not ignore_path.exists() or not ignore_path.is_file():
+        return []
+    return parse_docdrignore(ignore_path.read_text(encoding="utf-8", errors="replace"))
+
+
+def is_docdrignored(path: str, patterns: list[DocDrIgnorePattern]) -> bool:
+    normalized = PurePosixPath(path).as_posix().lstrip("./")
+    ignored = False
+    for item in patterns:
+        if _pattern_matches(normalized, item.pattern, item.anchored):
+            ignored = not item.negated
+    return ignored
+
+
+def _pattern_matches(path: str, pattern: str, anchored: bool) -> bool:
+    if not pattern:
+        return False
+    if anchored:
+        return fnmatch.fnmatchcase(path, pattern)
+    if "/" not in pattern:
+        return fnmatch.fnmatchcase(PurePosixPath(path).name, pattern) or fnmatch.fnmatchcase(path, f"**/{pattern}")
+    return fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, f"**/{pattern}")
+
+
+def _is_doc_like_path(path: str) -> bool:
+    return path.lower().endswith(_DOC_FILE_EXTENSIONS) or path.startswith("docs/")
 
 
 
@@ -31,7 +90,7 @@ def _validate_update_path(path: str) -> None:
 
     # Normalize and check for traversal
     try:
-        normalized = p.resolve(strict=False)
+        p.resolve(strict=False)
     except Exception:
         raise ValueError(f"Unresolvable path: {path!r}")
 
@@ -81,7 +140,11 @@ def find_existing_doc_pr(repo_path: str = ".") -> str | None:
     return None
 
 
-def get_real_doc_files(repo_path: str = ".") -> list[DocFile]:
+def get_real_doc_files(
+    repo_path: str = ".",
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+) -> list[DocFile]:
     """Return only 'real' documentation files: README.md and files under docs/.
     Excludes metadata-only files like CHANGELOG.md, CONTRIBUTING.md, etc.
     Used by detect_mode to decide bootstrap vs maintenance."""
@@ -91,7 +154,14 @@ def get_real_doc_files(repo_path: str = ".") -> list[DocFile]:
         text=True,
     )
     files = []
+    include_set = set(include_paths or [])
+    exclude_set = set(exclude_paths or [])
+    ignore_patterns = load_docdrignore(repo_path)
     for rel_path in result.stdout.splitlines():
+        if include_set and rel_path not in include_set:
+            continue
+        if rel_path in exclude_set or is_docdrignored(rel_path, ignore_patterns):
+            continue
         # Only README.md at root or anything under docs/
         is_readme = rel_path == "README.md"
         is_under_docs = rel_path.startswith("docs/")
@@ -184,7 +254,11 @@ def get_entry_points(repo_path: str, manifests: list[DocFile]) -> list[DocFile]:
     return results
 
 
-def get_doc_files(repo_path: str = ".") -> list[DocFile]:
+def get_doc_files(
+    repo_path: str = ".",
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+) -> list[DocFile]:
     """Find all markdown files in the repo (*.md files and anything under docs/)."""
     result = subprocess.run(
         ["git", "-C", repo_path, "ls-files"],
@@ -192,12 +266,19 @@ def get_doc_files(repo_path: str = ".") -> list[DocFile]:
         text=True,
     )
     files = []
+    include_set = set(include_paths or [])
+    exclude_set = set(exclude_paths or [])
+    ignore_patterns = load_docdrignore(repo_path)
     for rel_path in result.stdout.splitlines():
-        # Include all .md files and everything under docs/
-        if rel_path.endswith(".md") or rel_path.startswith("docs/"):
+        if include_set and rel_path not in include_set:
+            continue
+        if rel_path in exclude_set or is_docdrignored(rel_path, ignore_patterns):
+            continue
+        # Include doc-like files and everything under docs/
+        if _is_doc_like_path(rel_path):
             full = Path(repo_path) / rel_path
             if full.exists() and full.is_file():
-                files.append(DocFile(path=rel_path, content=full.read_text()))
+                files.append(DocFile(path=rel_path, content=full.read_text(encoding="utf-8", errors="replace")))
     return files
 
 

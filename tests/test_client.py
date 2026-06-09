@@ -272,6 +272,44 @@ def _mock_action_config():
     return cfg
 
 
+def test_action_passes_repo_config_paths_to_doc_scanners():
+    mock_cfg = _mock_action_config()
+
+    with (
+        patch.object(action_mod, "ActionConfig", return_value=mock_cfg),
+        patch.object(action_mod, "DocDrClient") as MockClient,
+        patch.object(action_mod, "get_doc_files", return_value=[DocFile(path="README.md", content="# Hi")]) as mock_docs,
+        patch.object(action_mod, "get_real_doc_files", return_value=[DocFile(path="README.md", content="# Hi")]) as mock_real_docs,
+        patch.object(action_mod, "get_git_diff", return_value="diff --git a/src/main.py\n+def foo(): pass"),
+        patch.object(action_mod, "parse_diff", return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")]),
+        patch.object(action_mod, "filter_diff", return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")]),
+        patch.object(action_mod, "scan_for_secrets", return_value=[]),
+        patch.object(action_mod, "redact_secrets", side_effect=lambda x: x),
+    ):
+        client_instance = MockClient.return_value
+        client_instance.get_repo_config.return_value = {
+            "mode": "maintenance",
+            "watched_paths": ["README.md"],
+            "ignored_paths": ["CHANGELOG.md"],
+        }
+        client_instance.send_maintenance.return_value = []
+
+        with pytest.raises(SystemExit) as exc_info:
+            action_mod.main()
+
+    assert exc_info.value.code == 0
+    mock_docs.assert_called_once_with(
+        mock_cfg.repo_path,
+        include_paths=["README.md"],
+        exclude_paths=["CHANGELOG.md"],
+    )
+    mock_real_docs.assert_called_once_with(
+        mock_cfg.repo_path,
+        include_paths=["README.md"],
+        exclude_paths=["CHANGELOG.md"],
+    )
+
+
 def test_maintenance_503_does_not_create_ghost_pr():
     """VAL-CROSS-025: When backend returns 503, neither commit_and_push
     nor create_or_update_pr is called during maintenance mode."""

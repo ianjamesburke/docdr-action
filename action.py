@@ -44,6 +44,8 @@ def main():
     # Check server-side config for explicit mode override
     server_config = client.get_repo_config(cfg.github_repository)
     server_mode = server_config.get("mode") if server_config else None
+    watched_paths = server_config.get("watched_paths", []) if server_config else []
+    ignored_paths = server_config.get("ignored_paths", []) if server_config else []
 
     if server_mode == "skip":
         print("[DocDr] Mode: skip (configured via DocDr dashboard). Exiting.")
@@ -51,8 +53,8 @@ def main():
 
     # Get current doc files
     print("[DocDr] Scanning repository...")
-    doc_files = get_doc_files(cfg.repo_path)
-    real_doc_files = get_real_doc_files(cfg.repo_path)
+    doc_files = get_doc_files(cfg.repo_path, include_paths=watched_paths, exclude_paths=ignored_paths)
+    real_doc_files = get_real_doc_files(cfg.repo_path, include_paths=watched_paths, exclude_paths=ignored_paths)
 
     if server_mode and server_mode != "auto":
         mode = server_mode

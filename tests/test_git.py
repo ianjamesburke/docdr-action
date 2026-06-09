@@ -1,7 +1,17 @@
 import subprocess
 from unittest.mock import patch
 import pytest
-from docdr.git import get_doc_files, get_real_doc_files, get_entry_points, write_updates, checkout_or_update_branch, find_existing_doc_pr, _validate_update_path
+from docdr.git import (
+    _validate_update_path,
+    checkout_or_update_branch,
+    find_existing_doc_pr,
+    get_doc_files,
+    get_entry_points,
+    get_real_doc_files,
+    is_docdrignored,
+    parse_docdrignore,
+    write_updates,
+)
 from docdr.client import DocFile, FileUpdate
 
 
@@ -160,6 +170,31 @@ def test_get_doc_files_still_returns_all_md(repo_with_mixed_md):
     assert "CHANGELOG.md" in paths
     assert "README.md" in paths
     assert "docs/guide.md" in paths
+
+
+def test_docdrignore_parser_supports_negation():
+    patterns = parse_docdrignore("docs/archive/**\n!docs/archive/keep.md\nCHANGELOG.md\n")
+    assert is_docdrignored("docs/archive/old.md", patterns) is True
+    assert is_docdrignored("docs/archive/keep.md", patterns) is False
+    assert is_docdrignored("CHANGELOG.md", patterns) is True
+
+
+def test_get_doc_files_excludes_docdrignored_files(repo_with_mixed_md):
+    (repo_with_mixed_md / ".docdrignore").write_text("CHANGELOG.md\ndocs/guide.md\n")
+    docs = get_doc_files(str(repo_with_mixed_md))
+    paths = [d.path for d in docs]
+    assert "README.md" in paths
+    assert "CHANGELOG.md" not in paths
+    assert "docs/guide.md" not in paths
+
+
+def test_get_doc_files_respects_configured_paths(repo_with_mixed_md):
+    docs = get_doc_files(
+        str(repo_with_mixed_md),
+        include_paths=["README.md", "docs/guide.md"],
+        exclude_paths=["docs/guide.md"],
+    )
+    assert [d.path for d in docs] == ["README.md"]
 
 
 # --- get_entry_points ---
