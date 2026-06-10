@@ -60,6 +60,9 @@ def test_write_updates_creates_file(git_repo):
 
 @pytest.mark.parametrize("path", [
     "README.md",
+    "README.mdx",
+    "README.rst",
+    "README.txt",
     "docs/api.md",
     "docs/guide/setup.md",
     "CHANGELOG.md",
@@ -186,6 +189,38 @@ def test_get_doc_files_excludes_docdrignored_files(repo_with_mixed_md):
     assert "README.md" in paths
     assert "CHANGELOG.md" not in paths
     assert "docs/guide.md" not in paths
+
+
+def test_get_doc_files_excludes_hidden_doc_paths(repo_with_mixed_md):
+    hidden_files = {
+        ".github/copilot-instructions.md": "# Hidden",
+        "docs/.private/guide.md": "# Private",
+        ".hidden.md": "# Hidden",
+    }
+    for rel, content in hidden_files.items():
+        p = repo_with_mixed_md / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        subprocess.run(["git", "-C", str(repo_with_mixed_md), "add", rel], check=True)
+    subprocess.run(["git", "-C", str(repo_with_mixed_md), "commit", "-m", "hidden docs"], check=True, capture_output=True)
+
+    docs = get_doc_files(str(repo_with_mixed_md))
+    paths = [d.path for d in docs]
+    assert ".github/copilot-instructions.md" not in paths
+    assert "docs/.private/guide.md" not in paths
+    assert ".hidden.md" not in paths
+
+
+def test_get_real_doc_files_excludes_hidden_doc_paths(repo_with_mixed_md):
+    rel = "docs/.private/guide.md"
+    p = repo_with_mixed_md / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# Private")
+    subprocess.run(["git", "-C", str(repo_with_mixed_md), "add", rel], check=True)
+    subprocess.run(["git", "-C", str(repo_with_mixed_md), "commit", "-m", "hidden real docs"], check=True, capture_output=True)
+
+    docs = get_real_doc_files(str(repo_with_mixed_md))
+    assert rel not in [d.path for d in docs]
 
 
 def test_get_doc_files_respects_configured_paths(repo_with_mixed_md):

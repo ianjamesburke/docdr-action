@@ -73,43 +73,42 @@ def _pattern_matches(path: str, pattern: str, anchored: bool) -> bool:
     return fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, f"**/{pattern}")
 
 
-def _is_doc_like_path(path: str) -> bool:
-    return path.lower().endswith(_DOC_FILE_EXTENSIONS) or path.startswith("docs/")
+def _normalize_doc_target_path(path: str) -> str:
+    raw_path = path.strip()
+    if not raw_path:
+        raise ValueError("Empty path")
+    if "\\" in raw_path:
+        raise ValueError(f"Unsafe document path: {path!r}")
 
+    raw = PurePosixPath(raw_path)
+    if raw.is_absolute():
+        raise ValueError(f"Absolute path rejected: {path!r}")
+
+    normalized = raw.as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+
+    p = PurePosixPath(normalized)
+    if p.is_absolute() or any(part in {"", ".."} for part in p.parts):
+        raise ValueError(f"Path traversal rejected: {path!r}")
+    if any(part.startswith(".") for part in p.parts):
+        raise ValueError(f"Hidden path rejected: {path!r}")
+    if not (normalized.lower().endswith(_DOC_FILE_EXTENSIONS) or normalized.startswith("docs/")):
+        raise ValueError(f"Path not allowed (must be doc-like or under docs/): {path!r}")
+    return normalized
+
+
+def _is_doc_like_path(path: str) -> bool:
+    try:
+        _normalize_doc_target_path(path)
+    except ValueError:
+        return False
+    return True
 
 
 def _validate_update_path(path: str) -> None:
     """Raise ValueError if path is unsafe to write."""
-    if not path:
-        raise ValueError("Empty path")
-
-    p = Path(path)
-
-    if p.is_absolute():
-        raise ValueError(f"Absolute path rejected: {path!r}")
-
-    # Normalize and check for traversal
-    try:
-        p.resolve(strict=False)
-    except Exception:
-        raise ValueError(f"Unresolvable path: {path!r}")
-
-    # Reject .. traversal by checking normalized form against a known base
-    # posixpath approach: reject if any part is ".."
-    for part in p.parts:
-        if part == "..":
-            raise ValueError(f"Path traversal rejected: {path!r}")
-
-    # Reject hidden files/directories
-    for part in p.parts:
-        if part.startswith("."):
-            raise ValueError(f"Hidden path rejected: {path!r}")
-
-    # Must be a .md file or under docs/
-    is_md = path.endswith(".md")
-    is_under_docs = path.startswith("docs/")
-    if not (is_md or is_under_docs):
-        raise ValueError(f"Path not allowed (must be *.md or under docs/): {path!r}")
+    _normalize_doc_target_path(path)
 
 
 def find_existing_doc_pr(repo_path: str = ".") -> str | None:
@@ -167,7 +166,7 @@ def get_real_doc_files(
         is_under_docs = rel_path.startswith("docs/")
         # Exclude known metadata-only files
         filename = Path(rel_path).name
-        if (is_readme or is_under_docs) and filename not in _METADATA_FILES:
+        if (is_readme or is_under_docs) and filename not in _METADATA_FILES and _is_doc_like_path(rel_path):
             full = Path(repo_path) / rel_path
             if full.exists() and full.is_file():
                 try:
