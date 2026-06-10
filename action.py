@@ -39,7 +39,10 @@ def main():
         print(f"[DocDr] Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    client = DocDrClient(base_url=cfg.api_url, license_key=cfg.license_key)
+    client = DocDrClient(
+        base_url=cfg.api_url,
+        github_token=cfg.github_token,
+    )
 
     # Check server-side config for explicit mode override
     server_config = client.get_repo_config(cfg.github_repository)
@@ -53,8 +56,12 @@ def main():
 
     # Get current doc files
     print("[DocDr] Scanning repository...")
-    doc_files = get_doc_files(cfg.repo_path, include_paths=watched_paths, exclude_paths=ignored_paths)
-    real_doc_files = get_real_doc_files(cfg.repo_path, include_paths=watched_paths, exclude_paths=ignored_paths)
+    doc_files = get_doc_files(
+        cfg.repo_path, include_paths=watched_paths, exclude_paths=ignored_paths
+    )
+    real_doc_files = get_real_doc_files(
+        cfg.repo_path, include_paths=watched_paths, exclude_paths=ignored_paths
+    )
 
     if server_mode and server_mode != "auto":
         mode = server_mode

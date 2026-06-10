@@ -77,9 +77,18 @@ class DocFile:
 
 
 class DocDrClient:
-    def __init__(self, base_url: str, license_key: str):
+    def __init__(
+        self,
+        base_url: str,
+        github_token: str,
+    ):
         self.base_url = base_url.rstrip("/")
-        self.license_key = license_key
+        self.github_token = github_token
+
+    def _auth_payload(self) -> dict[str, str]:
+        if not self.github_token:
+            raise RuntimeError("DocDr requires GITHUB_TOKEN.")
+        return {"github_token": self.github_token}
 
     def send_maintenance(
         self,
@@ -91,7 +100,7 @@ class DocDrClient:
             "POST",
             "/v1/maintenance",
             json={
-                "license_key": self.license_key,
+                **self._auth_payload(),
                 "repo": repo,
                 "diffs": [{"path": d.path, "diff": d.diff} for d in diffs],
                 "doc_files": [
@@ -111,7 +120,7 @@ class DocDrClient:
             "POST",
             "/v1/bootstrap",
             json={
-                "license_key": self.license_key,
+                **self._auth_payload(),
                 "repo": repo,
                 "tree": tree,
                 "manifests": [
@@ -202,7 +211,7 @@ class DocDrClient:
             with httpx.Client(timeout=10) as client:
                 resp = client.post(
                     f"{self.base_url}/v1/repo-config",
-                    json={"license_key": self.license_key, "repo": repo},
+                    json={**self._auth_payload(), "repo": repo},
                 )
                 resp.raise_for_status()
                 return resp.json()
@@ -221,7 +230,7 @@ class DocDrClient:
             resp = client.post(
                 f"{self.base_url}/v1/report",
                 json={
-                    "license_key": self.license_key,
+                    **self._auth_payload(),
                     "repo": repo,
                     "mode": mode,
                     "status": status,

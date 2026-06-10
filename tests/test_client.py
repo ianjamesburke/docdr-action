@@ -8,7 +8,50 @@ import respx
 
 import action as action_mod
 from docdr.client import DocDrClient, DocDrApiError, DocDrQuotaExceeded, DocFile
+from docdr.config import ActionConfig
 from docdr.diff import FileDiff
+
+
+@respx.mock
+def test_send_maintenance_sends_github_token_as_auth():
+    route = respx.post("http://localhost:8000/v1/maintenance").mock(
+        return_value=httpx.Response(200, json={"updates": [], "no_update": True})
+    )
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
+
+    client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
+
+    sent = json.loads(route.calls[0].request.content)
+    assert sent == {
+        "github_token": "ghs-token",
+        "repo": "owner/repo",
+        "diffs": [],
+        "doc_files": [],
+    }
+
+
+def test_action_config_requires_github_token(monkeypatch):
+    monkeypatch.delenv("DOCDR_API_URL", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    cfg = ActionConfig()
+
+    assert vars(cfg) == {
+        "api_url": "https://docdr.dev",
+        "github_token": "ghs-token",
+        "github_repository": "owner/repo",
+        "github_sha": "unknown",
+        "repo_path": ".",
+    }
+
+
+def test_action_config_fails_without_github_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
+        ActionConfig()
 
 
 @respx.mock
@@ -22,7 +65,7 @@ def test_send_maintenance_returns_updates():
             },
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     diffs = [FileDiff(path="src/main.py", diff="+ def foo(): pass")]
     updates = client.send_maintenance(repo="owner/repo", diffs=diffs, doc_files=[])
     assert len(updates) == 1
@@ -35,7 +78,7 @@ def test_send_maintenance_no_update():
     respx.post("http://localhost:8000/v1/maintenance").mock(
         return_value=httpx.Response(200, json={"updates": [], "no_update": True})
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     updates = client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert updates == []
 
@@ -51,7 +94,7 @@ def test_send_bootstrap_sends_source_files():
             },
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     source_files = [DocFile(path="main.py", content="def main(): pass")]
     updates = client.send_bootstrap(
         repo="owner/repo",
@@ -70,7 +113,7 @@ def test_send_bootstrap_source_files_defaults_to_empty():
     route = respx.post("http://localhost:8000/v1/bootstrap").mock(
         return_value=httpx.Response(200, json={"updates": [], "no_update": True})
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     client.send_bootstrap(repo="owner/repo", tree="", manifests=[])
     sent = json.loads(route.calls[0].request.content)
     assert sent["source_files"] == []
@@ -80,13 +123,15 @@ def test_send_bootstrap_source_files_defaults_to_empty():
 def test_send_maintenance_raises_on_403():
     """403 response raises DocDrApiError (not httpx.HTTPStatusError)."""
     respx.post("http://localhost:8000/v1/maintenance").mock(
-        return_value=httpx.Response(403, json={"detail": "Invalid license key"})
+        return_value=httpx.Response(
+            403, json={"detail": "GitHub token cannot access owner/repo"}
+        )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="bad-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="bad-token")
     with pytest.raises(DocDrApiError) as exc_info:
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert exc_info.value.status_code == 403
-    assert "Invalid license key" in exc_info.value.detail
+    assert "GitHub token cannot access owner/repo" in exc_info.value.detail
 
 
 # ── VAL-LLM-017: Action displays error codes from backend ────────────────────
@@ -100,7 +145,7 @@ def test_429_quota_exceeded_raises_quota_exception():
             429, json={"detail": {"error": "quota_exceeded", "used": 100, "quota": 100}}
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     with pytest.raises(DocDrQuotaExceeded) as exc_info:
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert exc_info.value.status_code == 429
@@ -116,7 +161,7 @@ def test_503_malformed_output_raises_api_error():
             503, json={"detail": "LLM returned malformed output; please retry."}
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     with pytest.raises(DocDrApiError) as exc_info:
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert exc_info.value.status_code == 503
@@ -131,7 +176,7 @@ def test_422_cost_protection_error_parsed():
             422, json={"detail": {"error": "too_many_diffs", "limit": 20, "actual": 21}}
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     with pytest.raises(DocDrApiError) as exc_info:
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert exc_info.value.status_code == 422
@@ -149,7 +194,7 @@ def test_429_quota_exceeded_not_retried():
             429, json={"detail": {"error": "quota_exceeded", "used": 100, "quota": 100}}
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     with pytest.raises(DocDrQuotaExceeded):
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     # Only 1 request made, no retries
@@ -176,7 +221,7 @@ def test_503_retried_then_succeeds():
             ),
         ]
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     updates = client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert len(updates) == 1
     assert updates[0].path == "README.md"
@@ -191,7 +236,7 @@ def test_503_retried_then_finally_raises():
             503, json={"detail": "LLM service temporarily unavailable; please retry."}
         )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     with pytest.raises(DocDrApiError) as exc_info:
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert exc_info.value.status_code == 503
@@ -220,7 +265,7 @@ def test_bootstrap_503_retried_then_succeeds():
             ),
         ]
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     updates = client.send_bootstrap(repo="owner/repo", tree="src/", manifests=[])
     assert len(updates) == 1
     assert route.call_count == 3
@@ -232,7 +277,7 @@ def test_422_not_retried():
     route = respx.post("http://localhost:8000/v1/maintenance").mock(
         return_value=httpx.Response(422, json={"detail": "Validation error"})
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="test-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="ghs-token")
     with pytest.raises(DocDrApiError) as exc_info:
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert exc_info.value.status_code == 422
@@ -243,9 +288,11 @@ def test_422_not_retried():
 def test_403_not_retried():
     """403 is NOT retried — raised immediately."""
     route = respx.post("http://localhost:8000/v1/maintenance").mock(
-        return_value=httpx.Response(403, json={"detail": "Invalid license key"})
+        return_value=httpx.Response(
+            403, json={"detail": "GitHub token cannot access owner/repo"}
+        )
     )
-    client = DocDrClient(base_url="http://localhost:8000", license_key="bad-key")
+    client = DocDrClient(base_url="http://localhost:8000", github_token="bad-token")
     with pytest.raises(DocDrApiError):
         client.send_maintenance(repo="owner/repo", diffs=[], doc_files=[])
     assert route.call_count == 1
@@ -257,15 +304,19 @@ def test_403_not_retried():
 # without touching git or creating any PR.
 
 
-def _make_completed_process(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+def _make_completed_process(
+    stdout: str = "", returncode: int = 0
+) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr=""
+    )
 
 
 def _mock_action_config():
     """Return a mock ActionConfig with minimal required fields."""
     cfg = MagicMock()
     cfg.api_url = "http://localhost:8000"
-    cfg.license_key = "test-key"
+    cfg.github_token = "ghs-token"
     cfg.github_repository = "owner/repo"
     cfg.github_sha = "abc1234567890"
     cfg.repo_path = "/tmp/fake-repo"
@@ -278,11 +329,31 @@ def test_action_passes_repo_config_paths_to_doc_scanners():
     with (
         patch.object(action_mod, "ActionConfig", return_value=mock_cfg),
         patch.object(action_mod, "DocDrClient") as MockClient,
-        patch.object(action_mod, "get_doc_files", return_value=[DocFile(path="README.md", content="# Hi")]) as mock_docs,
-        patch.object(action_mod, "get_real_doc_files", return_value=[DocFile(path="README.md", content="# Hi")]) as mock_real_docs,
-        patch.object(action_mod, "get_git_diff", return_value="diff --git a/src/main.py\n+def foo(): pass"),
-        patch.object(action_mod, "parse_diff", return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")]),
-        patch.object(action_mod, "filter_diff", return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")]),
+        patch.object(
+            action_mod,
+            "get_doc_files",
+            return_value=[DocFile(path="README.md", content="# Hi")],
+        ) as mock_docs,
+        patch.object(
+            action_mod,
+            "get_real_doc_files",
+            return_value=[DocFile(path="README.md", content="# Hi")],
+        ) as mock_real_docs,
+        patch.object(
+            action_mod,
+            "get_git_diff",
+            return_value="diff --git a/src/main.py\n+def foo(): pass",
+        ),
+        patch.object(
+            action_mod,
+            "parse_diff",
+            return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")],
+        ),
+        patch.object(
+            action_mod,
+            "filter_diff",
+            return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")],
+        ),
         patch.object(action_mod, "scan_for_secrets", return_value=[]),
         patch.object(action_mod, "redact_secrets", side_effect=lambda x: x),
     ):
@@ -298,6 +369,10 @@ def test_action_passes_repo_config_paths_to_doc_scanners():
             action_mod.main()
 
     assert exc_info.value.code == 0
+    MockClient.assert_called_once_with(
+        base_url=mock_cfg.api_url,
+        github_token=mock_cfg.github_token,
+    )
     mock_docs.assert_called_once_with(
         mock_cfg.repo_path,
         include_paths=["README.md"],
@@ -324,10 +399,26 @@ def test_maintenance_503_does_not_create_ghost_pr():
         patch.object(action_mod, "write_updates") as mock_write,
         patch.object(action_mod, "find_existing_doc_pr", return_value=None),
         patch.object(action_mod, "get_doc_files", return_value=[]),
-        patch.object(action_mod, "get_real_doc_files", return_value=[DocFile(path="README.md", content="# Hi")]),
-        patch.object(action_mod, "get_git_diff", return_value="diff --git a/src/main.py\n+def foo(): pass"),
-        patch.object(action_mod, "parse_diff", return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")]),
-        patch.object(action_mod, "filter_diff", return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")]),
+        patch.object(
+            action_mod,
+            "get_real_doc_files",
+            return_value=[DocFile(path="README.md", content="# Hi")],
+        ),
+        patch.object(
+            action_mod,
+            "get_git_diff",
+            return_value="diff --git a/src/main.py\n+def foo(): pass",
+        ),
+        patch.object(
+            action_mod,
+            "parse_diff",
+            return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")],
+        ),
+        patch.object(
+            action_mod,
+            "filter_diff",
+            return_value=[FileDiff(path="src/main.py", diff="+def foo(): pass")],
+        ),
         patch.object(action_mod, "scan_for_secrets", return_value=[]),
         patch.object(action_mod, "redact_secrets", side_effect=lambda x: x),
     ):
@@ -377,7 +468,9 @@ def test_bootstrap_503_does_not_create_ghost_pr():
         patch.object(action_mod, "write_updates") as mock_write,
         patch.object(action_mod, "find_existing_doc_pr", return_value=None),
         patch.object(action_mod, "get_doc_files", return_value=[]),
-        patch.object(action_mod, "get_real_doc_files", return_value=[]),  # empty → bootstrap mode
+        patch.object(
+            action_mod, "get_real_doc_files", return_value=[]
+        ),  # empty → bootstrap mode
         patch.object(action_mod, "get_entry_points", return_value=[]),
         patch.object(action_mod, "redact_secrets", side_effect=lambda x: x),
         patch.object(action_mod, "subprocess", mock_sub),

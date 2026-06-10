@@ -2,9 +2,6 @@ name: DocDr - Autonomous Documentation
 description: Keeps your repository Markdown docs in sync with code changes.
 
 inputs:
-  license-key:
-    description: Your DocDr license key (store as a GitHub secret)
-    required: true
   api-url:
     description: DocDr API URL (override for self-hosted)
     required: false
@@ -29,6 +26,5 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        DOCDR_LICENSE_KEY: ${{ inputs.license-key }}
         DOCDR_API_URL: ${{ inputs.api-url }}
       run: python ${{ github.action_path }}/action/action.py
